@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+
+inbox/*
+processed/*
+state/*
+email_log.csv
+invoices.csv
