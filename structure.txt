@@ -1,0 +1,8 @@
+Folder PATH listing for volume New Volume
+Volume serial number is 3CFB-27E1
+D:.
++---inbox
++---processed
++---sampleInvoice
++---state
++---__pycache__
