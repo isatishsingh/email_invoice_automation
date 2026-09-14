@@ -1,317 +1,179 @@
 import time
-import threading
-import traceback
+from pathlib import Path
 
-from fastapi import FastAPI
-import uvicorn
-
-import email_agent_g
-import invoice_extractor_g
+import email_agent
+import invoice_extractor
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-GMAIL_POLL_INTERVAL = 10
+INBOX_DIR = Path("inbox")
 
-INVOICE_CHECK_INTERVAL = 2
-
-
-# ============================================================
-# APPLICATION
-# ============================================================
-
-app = FastAPI(
-    title="Invoice Email Automation",
-    version="1.0.0"
-)
+POLL_INTERVAL = 10  # seconds
 
 
-# ============================================================
-# RUNTIME STATE
-# ============================================================
-
-service_state = {
-
-    "running": True,
-
-    "gmail_worker": "starting",
-
-    "invoice_worker": "starting",
-
-    "last_gmail_check": None,
-
-    "last_invoice_check": None,
-
-    "last_error": None,
+SUPPORTED_EXTENSIONS = {
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
 }
 
 
 # ============================================================
-# GMAIL WORKER
+# CHECK INVOICE FILES
 # ============================================================
 
-def gmail_worker():
+def has_invoice_files():
 
-    service_state[
-        "gmail_worker"
-    ] = "running"
+    if not INBOX_DIR.exists():
+        return False
+
+    for file in INBOX_DIR.iterdir():
+
+        if not file.is_file():
+            continue
+
+        if file.suffix.lower() in SUPPORTED_EXTENSIONS:
+            return True
+
+    return False
+
+
+# ============================================================
+# RUN INVOICE EXTRACTION
+# ============================================================
+
+def process_invoices():
+
+    if not has_invoice_files():
+        return
+
+    print()
+    print("=" * 60)
+    print("[INVOICE] New invoice file(s) detected.")
+    print("[INVOICE] Starting invoice extraction...")
+    print("=" * 60)
+
+    try:
+
+        invoice_extractor.main()
+
+        print()
+        print("[INVOICE] Extraction completed.")
+
+    except Exception as e:
+
+        print()
+        print(
+            f"[INVOICE ERROR] {e}"
+        )
+
+
+# ============================================================
+# MAIN LOOP
+# ============================================================
+
+def main():
+
+    print()
+    print("=" * 60)
+    print("       INVOICE EMAIL AUTOMATION")
+    print("=" * 60)
+    print()
+
+    print(
+        f"[SYSTEM] Checking Gmail every "
+        f"{POLL_INTERVAL} seconds."
+    )
+
+    print(
+        "[SYSTEM] Press Ctrl+C to stop."
+    )
+
+    print()
 
     while True:
 
         try:
 
-            print()
+            # ------------------------------------------------
+            # STEP 1
+            # Check Gmail
+            # ------------------------------------------------
+
             print(
-                "[SYSTEM] Checking Gmail..."
+                "[GMAIL] Checking for new emails..."
             )
 
-            count = (
-                email_agent_g.poll_gmail()
-            )
-
-            service_state[
-                "last_gmail_check"
-            ] = time.time()
-
-            service_state[
-                "last_error"
-            ] = None
+            count = email_agent.poll_gmail()
 
             if count > 0:
 
                 print(
-                    f"[SYSTEM] Gmail processed "
+                    f"[GMAIL] Processed "
                     f"{count} email(s)."
                 )
 
-        except Exception as e:
+            else:
 
-            service_state[
-                "last_error"
-            ] = str(e)
+                print(
+                    "[GMAIL] No new emails."
+                )
 
+            # ------------------------------------------------
+            # STEP 2
+            # Check inbox/
+            # ------------------------------------------------
+
+            process_invoices()
+
+            # ------------------------------------------------
+            # STEP 3
+            # Wait before next check
+            # ------------------------------------------------
+
+            print()
             print(
-                "[GMAIL WORKER ERROR]"
+                f"[SYSTEM] Sleeping "
+                f"{POLL_INTERVAL} seconds..."
             )
 
-            print(e)
+            time.sleep(
+                POLL_INTERVAL
+            )
 
-            traceback.print_exc()
+        except KeyboardInterrupt:
 
-            # Keep worker alive.
-            # It will retry on next cycle.
+            print()
+            print(
+                "[SYSTEM] Stopping..."
+            )
 
-        time.sleep(
-            GMAIL_POLL_INTERVAL
-        )
-
-
-# ============================================================
-# INVOICE WORKER
-# ============================================================
-
-def invoice_worker():
-
-    service_state[
-        "invoice_worker"
-    ] = "running"
-
-    while True:
-
-        try:
-
-            # ------------------------------------------------
-            # Your existing invoice extractor already:
-            #
-            # 1. Looks at inbox/
-            # 2. Sends documents to Gemini
-            # 3. Writes invoices.csv
-            # 4. Moves processed documents
-            #
-            # So we simply reuse it.
-            # ------------------------------------------------
-
-            invoice_extractor_g.main()
-
-            service_state[
-                "last_invoice_check"
-            ] = time.time()
+            break
 
         except Exception as e:
 
-            service_state[
-                "last_error"
-            ] = str(e)
-
+            print()
             print(
-                "[INVOICE WORKER ERROR]"
+                f"[SYSTEM ERROR] {e}"
             )
 
-            print(e)
+            print(
+                "[SYSTEM] Retrying..."
+            )
 
-            traceback.print_exc()
-
-        time.sleep(
-            INVOICE_CHECK_INTERVAL
-        )
-
-
-# ============================================================
-# HEALTH ENDPOINT
-# ============================================================
-
-@app.get("/")
-def root():
-
-    return {
-
-        "service":
-            "Invoice Email Automation",
-
-        "status":
-            "running"
-    }
-
-
-@app.get("/health")
-def health():
-
-    return {
-
-        "status":
-            "healthy",
-
-        "gmail_worker":
-            service_state[
-                "gmail_worker"
-            ],
-
-        "invoice_worker":
-            service_state[
-                "invoice_worker"
-            ]
-    }
-
-
-@app.get("/status")
-def status():
-
-    return {
-
-        "service":
-            "invoice-email-automation",
-
-        "running":
-            service_state[
-                "running"
-            ],
-
-        "gmail_worker":
-            service_state[
-                "gmail_worker"
-            ],
-
-        "invoice_worker":
-            service_state[
-                "invoice_worker"
-            ],
-
-        "last_gmail_check":
-            service_state[
-                "last_gmail_check"
-            ],
-
-        "last_invoice_check":
-            service_state[
-                "last_invoice_check"
-            ],
-
-        "last_error":
-            service_state[
-                "last_error"
-            ]
-    }
+            time.sleep(
+                POLL_INTERVAL
+            )
 
 
 # ============================================================
-# START SERVICE
+# START
 # ============================================================
 
 if __name__ == "__main__":
-
-    print()
-    print("=" * 70)
-    print(
-        "      INVOICE EMAIL AUTOMATION"
-    )
-    print("=" * 70)
-
-    print()
-    print(
-        "Gmail Worker       : ACTIVE"
-    )
-
-    print(
-        f"Gmail Interval     : "
-        f"{GMAIL_POLL_INTERVAL} seconds"
-    )
-
-    print(
-        "Invoice Worker     : ACTIVE"
-    )
-
-    print(
-        f"Invoice Interval   : "
-        f"{INVOICE_CHECK_INTERVAL} seconds"
-    )
-
-    print()
-    print(
-        "Health URL         : "
-        "http://localhost:8000/health"
-    )
-
-    print(
-        "Status URL         : "
-        "http://localhost:8000/status"
-    )
-
-    print()
-    print("=" * 70)
-    print()
-
-    # --------------------------------------------------------
-    # Start Gmail worker
-    # --------------------------------------------------------
-
-    gmail_thread = threading.Thread(
-        target=gmail_worker,
-        daemon=True,
-        name="GmailWorker"
-    )
-
-    # --------------------------------------------------------
-    # Start invoice worker
-    # --------------------------------------------------------
-
-    invoice_thread = threading.Thread(
-        target=invoice_worker,
-        daemon=True,
-        name="InvoiceWorker"
-    )
-
-    gmail_thread.start()
-
-    invoice_thread.start()
-
-    # --------------------------------------------------------
-    # Start HTTP server
-    # --------------------------------------------------------
-
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000
-    )
+    main()
